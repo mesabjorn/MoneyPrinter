@@ -7,12 +7,12 @@
 # --- MODIFIED VERSION --- #
 
 import base64
+from pathlib import Path
 import requests
 import threading
 
 from typing import List
 from termcolor import colored
-from playsound import playsound
 
 
 VOICES = [
@@ -96,16 +96,19 @@ def split_string(string: str, chunk_size: int) -> List[str]:
 
 # checking if the website that provides the service is available
 def get_api_response() -> requests.Response:
-    url = f'{ENDPOINTS[current_endpoint].split("/a")[0]}'
+    url = f"{ENDPOINTS[current_endpoint].split('/a')[0]}"
     response = requests.get(url)
     return response
 
 
 # saving the audio file
-def save_audio_file(base64_data: str, filename: str = "output.mp3") -> None:
+def save_audio_file(base64_data: str, target_dir: Path, i: int) -> Path:
     audio_bytes = base64.b64decode(base64_data)
-    with open(filename, "wb") as file:
+    filename = f"{i}.mp3"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    with open(target_dir / filename, "wb") as file:
         file.write(audio_bytes)
+    return target_dir / filename
 
 
 # send POST request to get the audio data
@@ -118,24 +121,20 @@ def generate_audio(text: str, voice: str) -> bytes:
 
 
 # creates an text to speech audio file
-def tts(
-    text: str,
-    voice: str = "none",
-    filename: str = "output.mp3",
-    play_sound: bool = False,
-) -> None:
-    # checking if the website is available
-    global current_endpoint
-
+def tts(text: str, voice: str, audio_parts: Path, i: int) -> Path:
     if get_api_response().status_code == 200:
         print(colored("[+] TikTok TTS Service available!", "green"))
     else:
-        current_endpoint = (current_endpoint + 1) % 2
         if get_api_response().status_code == 200:
             print(colored("[+] TTS Service available!", "green"))
         else:
-            print(colored("[-] TTS Service not available and probably temporarily rate limited, try again later..." , "red"))
-            return
+            print(
+                colored(
+                    "[-] TTS Service not available and probably temporarily rate limited, try again later...",
+                    "red",
+                )
+            )
+            return None
 
     # checking if arguments are valid
     if voice == "none":
@@ -198,10 +197,9 @@ def tts(
             # Concatenate the base64 data in the correct order
             audio_base64_data = "".join(audio_base64_data)
 
-        save_audio_file(audio_base64_data, filename)
-        print(colored(f"[+] Audio file saved successfully as '{filename}'", "green"))
-        if play_sound:
-            playsound(filename)
+        n = save_audio_file(audio_base64_data, audio_parts, i)
+        print(colored(f"[+] Audio file saved successfully as '{n}'", "green"))
+        return n
 
     except Exception as e:
         print(colored(f"[-] An error occurred during TTS: {e}", "red"))

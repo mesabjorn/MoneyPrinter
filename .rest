@@ -1,0 +1,15 @@
+POST http://localhost:8080/api/generate HTTP/1.1
+content-type: application/json
+
+{
+    "videoSubject":"Animals on the farm",
+    "customPrompt":"",
+    "voice":"en_us_001",
+    "paragraphNumber": 1,
+    "aiModel": "gpt-3.5-turbo-1106",
+    "threads": 2,
+    "subtitlesPosition": "center,bottom",
+    "color": "yellow",
+    "useMusic": false,
+    "automateYoutubeUpload": false
+}

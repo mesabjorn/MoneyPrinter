@@ -1,32 +1,32 @@
 import re
 import os
-import g4f
 import json
 import openai
 import google.generativeai as genai
+import g4f
 
-from g4f.client import Client
 from termcolor import colored
 from dotenv import load_dotenv
 from typing import Tuple, List
+
+from main import ProjectConfig
 
 # Load environment variables
 load_dotenv("../.env")
 
 # Set environment variables
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
-GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-genai.configure(api_key=GOOGLE_API_KEY)
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 
-def generate_response(prompt: str, ai_model: str) -> str:
+def generate_response(prompt: str, model_name: str) -> str | None:
     """
     Generate a script for a video, depending on the subject of the video.
 
     Args:
         video_subject (str): The subject of the video.
-        ai_model (str): The AI model to use for generation.
+        model_name (str): The AI model to use for generation.
 
 
     Returns:
@@ -35,39 +35,19 @@ def generate_response(prompt: str, ai_model: str) -> str:
 
     """
 
-    if ai_model == 'g4f':
-        # Newest G4F Architecture
-        client = Client()
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            provider=g4f.Provider.You, 
-            messages=[{"role": "user", "content": prompt}],
-        ).choices[0].message.content
-
-    elif ai_model in ["gpt3.5-turbo", "gpt4"]:
-
-        model_name = "gpt-3.5-turbo" if ai_model == "gpt3.5-turbo" else "gpt-4-1106-preview"
-
-        response = openai.chat.completions.create(
-
+    response = (
+        openai.chat.completions.create(
             model=model_name,
-
             messages=[{"role": "user", "content": prompt}],
-
-        ).choices[0].message.content
-    elif ai_model == 'gemmini':
-        model = genai.GenerativeModel('gemini-pro')
-        response_model = model.generate_content(prompt)
-        response = response_model.text
-
-    else:
-
-        raise ValueError("Invalid AI model selected.")
+        )
+        .choices[0]
+        .message.content
+    )
 
     return response
 
-def generate_script(video_subject: str, paragraph_number: int, ai_model: str, voice: str, customPrompt: str) -> str:
 
+def generate_script(project_config: ProjectConfig) -> str:
     """
     Generate a script for a video, depending on the subject of the video, the number of paragraphs, and the AI model.
 
@@ -90,9 +70,9 @@ def generate_script(video_subject: str, paragraph_number: int, ai_model: str, vo
     """
 
     # Build prompt
-    
-    if customPrompt:
-        prompt = customPrompt
+
+    if project_config.customPrompt:
+        prompt = project_config.customPrompt
     else:
         prompt = """
             Generate a script for a video, depending on the subject of the video.
@@ -116,14 +96,14 @@ def generate_script(video_subject: str, paragraph_number: int, ai_model: str, vo
 
     prompt += f"""
     
-    Subject: {video_subject}
-    Number of paragraphs: {paragraph_number}
-    Language: {voice}
+    Subject: {project_config.videoSubject}
+    Number of paragraphs: {project_config.paragraphNumber}
+    Language: {project_config.voice}
 
     """
 
     # Generate script
-    response = generate_response(prompt, ai_model)
+    response = generate_response(prompt, project_config.aiModel)
 
     print(colored(response, "cyan"))
 
@@ -142,21 +122,25 @@ def generate_script(video_subject: str, paragraph_number: int, ai_model: str, vo
         paragraphs = response.split("\n\n")
 
         # Select the specified number of paragraphs
-        selected_paragraphs = paragraphs[:paragraph_number]
+        selected_paragraphs = paragraphs[: project_config.paragraphNumber]
 
         # Join the selected paragraphs into a single string
         final_script = "\n\n".join(selected_paragraphs)
 
         # Print to console the number of paragraphs used
-        print(colored(f"Number of paragraphs used: {len(selected_paragraphs)}", "green"))
+        print(
+            colored(f"Number of paragraphs used: {len(selected_paragraphs)}", "green")
+        )
 
         return final_script
     else:
         print(colored("[-] GPT returned an empty response.", "red"))
-        return None
+        return ""
 
 
-def get_search_terms(video_subject: str, amount: int, script: str, ai_model: str) -> List[str]:
+def get_search_terms(
+    video_subject: str, amount: int, script: str, ai_model: str
+) -> List[str]:
     """
     Generate a JSON-Array of search terms for stock videos,
     depending on the subject of a video.
@@ -201,17 +185,24 @@ def get_search_terms(video_subject: str, amount: int, script: str, ai_model: str
 
     # Parse response into a list of search terms
     search_terms = []
-    
+
     try:
         search_terms = json.loads(response)
-        if not isinstance(search_terms, list) or not all(isinstance(term, str) for term in search_terms):
+        if not isinstance(search_terms, list) or not all(
+            isinstance(term, str) for term in search_terms
+        ):
             raise ValueError("Response is not a list of strings.")
 
     except (json.JSONDecodeError, ValueError):
         # Get everything between the first and last square brackets
-        response = response[response.find("[") + 1:response.rfind("]")]
+        response = response[response.find("[") + 1 : response.rfind("]")]
 
-        print(colored("[*] GPT returned an unformatted response. Attempting to clean...", "yellow"))
+        print(
+            colored(
+                "[*] GPT returned an unformatted response. Attempting to clean...",
+                "yellow",
+            )
+        )
 
         # Attempt to extract list-like string and convert to list
         match = re.search(r'\["(?:[^"\\]|\\.)*"(?:,\s*"[^"\\]*")*\]', response)
@@ -223,46 +214,52 @@ def get_search_terms(video_subject: str, amount: int, script: str, ai_model: str
                 print(colored("[-] Could not parse response.", "red"))
                 return []
 
-
     # Let user know
-    print(colored(f"\nGenerated {len(search_terms)} search terms: {', '.join(search_terms)}", "cyan"))
+    print(
+        colored(
+            f"\nGenerated {len(search_terms)} search terms: {', '.join(search_terms)}",
+            "cyan",
+        )
+    )
 
     # Return search terms
     return search_terms
 
 
-def generate_metadata(video_subject: str, script: str, ai_model: str) -> Tuple[str, str, List[str]]:  
-    """  
-    Generate metadata for a YouTube video, including the title, description, and keywords.  
-  
-    Args:  
-        video_subject (str): The subject of the video.  
-        script (str): The script of the video.  
-        ai_model (str): The AI model to use for generation.  
-  
-    Returns:  
-        Tuple[str, str, List[str]]: The title, description, and keywords for the video.  
-    """  
-  
-    # Build prompt for title  
+def generate_metadata(
+    video_subject: str, script: str, ai_model: str
+) -> Tuple[str, str, List[str]]:
+    """
+    Generate metadata for a YouTube video, including the title, description, and keywords.
+
+    Args:
+        video_subject (str): The subject of the video.
+        script (str): The script of the video.
+        ai_model (str): The AI model to use for generation.
+
+    Returns:
+        Tuple[str, str, List[str]]: The title, description, and keywords for the video.
+    """
+
+    # Build prompt for title
     title_prompt = f"""  
     Generate a catchy and SEO-friendly title for a YouTube shorts video about {video_subject}.  
-    """  
-  
-    # Generate title  
-    title = generate_response(title_prompt, ai_model).strip()  
-    
-    # Build prompt for description  
+    """
+
+    # Generate title
+    title = generate_response(title_prompt, ai_model).strip()
+
+    # Build prompt for description
     description_prompt = f"""  
     Write a brief and engaging description for a YouTube shorts video about {video_subject}.  
     The video is based on the following script:  
     {script}  
-    """  
-  
-    # Generate description  
-    description = generate_response(description_prompt, ai_model).strip()  
-  
-    # Generate keywords  
-    keywords = get_search_terms(video_subject, 6, script, ai_model)  
+    """
 
-    return title, description, keywords  
+    # Generate description
+    description = generate_response(description_prompt, ai_model).strip()
+
+    # Generate keywords
+    keywords = get_search_terms(video_subject, 6, script, ai_model)
+
+    return title, description, keywords
