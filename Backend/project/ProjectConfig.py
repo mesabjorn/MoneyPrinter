@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 
+
 @dataclass
 class ProjectConfig:
     videoSubject: str
@@ -13,3 +14,5 @@ class ProjectConfig:
     useMusic: bool = False
     automateYoutubeUpload: bool = False
     customPrompt: str = ""
+
+   

@@ -2,23 +2,20 @@ import re
 import os
 import json
 import openai
-import google.generativeai as genai
-import g4f
-
+from pathlib import Path
 from termcolor import colored
-from dotenv import load_dotenv
-from typing import Tuple, List
+from typing import Tuple, List, TYPE_CHECKING
+from decouple import config
 
-from main import ProjectConfig
 
-# Load environment variables
-load_dotenv("../.env")
 
 # Set environment variables
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = config("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GOOGLE_API_KEY = config("GOOGLE_API_KEY")
 
+if TYPE_CHECKING:
+    from backend.project.ProjectConfig import ProjectConfig
 
 def generate_response(prompt: str, model_name: str) -> str | None:
     """
@@ -47,19 +44,21 @@ def generate_response(prompt: str, model_name: str) -> str | None:
     return response
 
 
-def generate_script(project_config: ProjectConfig) -> str:
+def generate_script(video_subject: str, paragraph_number: int=1, voice: str="en_us_001", model: str="gpt-3.5-turbo-1106", custom_prompt: str="") -> str:
     """
     Generate a script for a video, depending on the subject of the video, the number of paragraphs, and the AI model.
 
 
 
     Args:
-
+        custom_prompt (str): Optional. A custom prompt to use for the script generation.
         video_subject (str): The subject of the video.
 
         paragraph_number (int): The number of paragraphs to generate.
 
-        ai_model (str): The AI model to use for generation.
+        voice (str): The voice to use for the script generation.
+
+        model (str): The AI model to use for generation.
 
 
 
@@ -68,13 +67,8 @@ def generate_script(project_config: ProjectConfig) -> str:
         str: The script for the video.
 
     """
-
-    # Build prompt
-
-    if project_config.customPrompt:
-        prompt = project_config.customPrompt
-    else:
-        prompt = """
+  
+    prompt = custom_prompt if len(custom_prompt) > 0 else f"""
             Generate a script for a video, depending on the subject of the video.
 
             The script is to be returned as a string with the specified number of paragraphs.
@@ -96,14 +90,14 @@ def generate_script(project_config: ProjectConfig) -> str:
 
     prompt += f"""
     
-    Subject: {project_config.videoSubject}
-    Number of paragraphs: {project_config.paragraphNumber}
-    Language: {project_config.voice}
+    Subject: {video_subject}
+    Number of paragraphs: {paragraph_number}
+    Language: {voice}
 
     """
 
     # Generate script
-    response = generate_response(prompt, project_config.aiModel)
+    response = generate_response(prompt, model)
 
     print(colored(response, "cyan"))
 
@@ -122,7 +116,7 @@ def generate_script(project_config: ProjectConfig) -> str:
         paragraphs = response.split("\n\n")
 
         # Select the specified number of paragraphs
-        selected_paragraphs = paragraphs[: project_config.paragraphNumber]
+        selected_paragraphs = paragraphs[: paragraph_number]
 
         # Join the selected paragraphs into a single string
         final_script = "\n\n".join(selected_paragraphs)
@@ -139,7 +133,7 @@ def generate_script(project_config: ProjectConfig) -> str:
 
 
 def get_search_terms(
-    video_subject: str, amount: int, script: str, ai_model: str
+    video_subject: str, amount: int, script: str, ai_model: str, target_path: Path
 ) -> List[str]:
     """
     Generate a JSON-Array of search terms for stock videos,
@@ -150,11 +144,16 @@ def get_search_terms(
         amount (int): The amount of search terms to generate.
         script (str): The script of the video.
         ai_model (str): The AI model to use for generation.
-
+        target_path (Path): The path to save the search terms to.
     Returns:
         List[str]: The search terms for the video subject.
     """
-
+    if target_path.exists():
+        with open(target_path, "r") as f:
+            search_terms = json.load(f)
+        print(colored(f"[+] Search terms loaded from {target_path}", "green"))
+        return search_terms
+    
     # Build prompt
     prompt = f"""
     Generate {amount} search terms for stock videos,
@@ -181,8 +180,7 @@ def get_search_terms(
 
     # Generate search terms
     response = generate_response(prompt, ai_model)
-    print(response)
-
+    
     # Parse response into a list of search terms
     search_terms = []
 
@@ -206,7 +204,7 @@ def get_search_terms(
 
         # Attempt to extract list-like string and convert to list
         match = re.search(r'\["(?:[^"\\]|\\.)*"(?:,\s*"[^"\\]*")*\]', response)
-        print(match.group())
+        
         if match:
             try:
                 search_terms = json.loads(match.group())
@@ -221,13 +219,15 @@ def get_search_terms(
             "cyan",
         )
     )
+    with open(target_path, "w") as f:
+        json.dump(search_terms, f, indent=4)
 
     # Return search terms
     return search_terms
 
 
 def generate_metadata(
-    video_subject: str, script: str, ai_model: str
+    video_subject: str, script: str, ai_model: str, target_path: Path
 ) -> Tuple[str, str, List[str]]:
     """
     Generate metadata for a YouTube video, including the title, description, and keywords.
@@ -236,11 +236,16 @@ def generate_metadata(
         video_subject (str): The subject of the video.
         script (str): The script of the video.
         ai_model (str): The AI model to use for generation.
-
+        target_path (Path): The path to save the metadata to.
     Returns:
         Tuple[str, str, List[str]]: The title, description, and keywords for the video.
     """
-
+    if target_path.exists():
+        with open(target_path, "r") as f:
+            metadata = json.load(f)
+        print(colored(f"[+] Metadata loaded from {target_path}", "green"))
+        return metadata["title"], metadata["description"], metadata["keywords"]
+    
     # Build prompt for title
     title_prompt = f"""  
     Generate a catchy and SEO-friendly title for a YouTube shorts video about {video_subject}.  
@@ -260,6 +265,6 @@ def generate_metadata(
     description = generate_response(description_prompt, ai_model).strip()
 
     # Generate keywords
-    keywords = get_search_terms(video_subject, 6, script, ai_model)
+    keywords = get_search_terms(video_subject, 6, script, ai_model, target_path)
 
     return title, description, keywords

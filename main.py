@@ -1,19 +1,15 @@
-import hashlib
-from pathlib import Path
+import json
 import random
 import os
-from uuid import uuid4
 
-from backend.ProjectConfig import ProjectConfig
-import resources.resources
-
-from backend.gpt import generate_script, get_search_terms, generate_metadata
-from backend.video import save_video, generate_subtitles, combine_videos, generate_video
-from backend.search import search_for_stock_videos
+from backend.project.AIVideoProject import AIVideoProject
+from backend.MyHTTPException import MyHTTPException
+from backend.gpt import generate_metadata
+from backend.video import generate_subtitles, combine_videos, generate_video
 from backend.tiktokvoice import tts
 from backend.youtube import upload_video
-
-from flask import Flask, request, jsonify
+   
+from flask import Flask, Request, request, jsonify, Response 
 from flask_cors import CORS
 
 from termcolor import colored
@@ -27,6 +23,8 @@ from moviepy.editor import (
 )
 
 from decouple import config
+
+from backend import LOGGER
 
 # Set environment variables
 SESSION_ID = config("TIKTOK_SESSION_ID")
@@ -42,211 +40,57 @@ CORS(app)
 # Constants
 HOST = "0.0.0.0"
 PORT = 8080
-AMOUNT_OF_STOCK_VIDEOS = 5
-GENERATING = False
-
 
 def select_song():
     return random.choice(resources.resources.SONGS)
 
-
-def parse_json(json_data: dict) -> ProjectConfig:
-    return ProjectConfig(
-        videoSubject=json_data.get("videoSubject", ""),
-        customPrompt=json_data.get("customPrompt", ""),
-        voice=json_data.get("voice", "en_us_001"),
-        paragraphNumber=int(json_data.get("paragraphNumber", 1) or 1),
-        aiModel=json_data.get("aiModel", "gpt-3.5-turbo-1106"),
-        threads=int(json_data.get("threads", 2) or 2),
-        subtitlesPosition=json_data.get("subtitlesPosition", "center,bottom"),
-        color=json_data.get("color", "Yellow"),
-        useMusic=bool(json_data.get("useMusic", False)),
-        automateYoutubeUpload=bool(json_data.get("automateYoutubeUpload", False)),
-    )
-
-
-def init_project(title: str) -> Path:
-    project_id = hashlib.sha256(title.encode()).hexdigest()
-    project_dir = Path(f"./creations/{project_id}")
-    subtitles_dir = project_dir / "subtitles"
-    video_dir = project_dir / "video"
-    output_dir = project_dir / "output"
-
-    project_dir.mkdir(parents=True, exist_ok=True)
-    subtitles_dir.mkdir(parents=True, exist_ok=True)
-    video_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    return project_dir
-
-
-# Generation Endpoint
 @app.route("/api/generate", methods=["POST"])
-def generate():
-    project_config = parse_json(request.get_json())
-
-    # Print little information about the video which is to be generated
-    print(colored("[Video to be generated]", "blue"))
-    print(colored(f"   Subject: {project_config.videoSubject}", "blue"))
-    print(
-        colored(f"   AI Model: {project_config.aiModel}", "blue")
-    )  # Print the AI model being used
-    print(
-        colored(f"   Custom Prompt: {project_config.customPrompt}", "blue")
-    )  # Print the AI model being used
-
-    project_dir = init_project(project_config.videoSubject)
-
-    voice_prefix = project_config.voice[:2]
-
-    # Generate a script
-    script = generate_script(
-        project_config
-    )  # Pass the AI model to the script generation
-
-    # Let user know
-    print(colored("[+] Script generated!\n", "green"))
-
-    nvideos = len(list(project_dir.glob("video/*.mp4")))
-    if nvideos == 0:
-        # dont redownload if there are already videos in the project directory
-        # Generate search terms
-        search_terms = get_search_terms(
-            project_config.videoSubject,
-            AMOUNT_OF_STOCK_VIDEOS,
-            script,
-            project_config.aiModel,
+def generate_endpoint() -> Response:
+    result, err = generate(request)
+    if result:
+        return Response(
+            response=json.dumps(result),
+            status=200,
+            mimetype="application/json"
         )
+    elif err:
+        return err.to_response()
+    else:
+        return MyHTTPException(500, "Unknown error").to_response()
+    
 
-        # Search for a video of the given search term
-        video_urls = []
 
-        # Defines how many results it should query and search through
-        it = 15
+def generate(request: Request) -> tuple[dict|None,MyHTTPException|None]:
 
-        # Defines the minimum duration of each clip
-        min_dur = 10
+    project = AIVideoProject(request.get_json())
+    
+    LOGGER.info(f"Generating video for '{project.config.videoSubject}'")
 
-        # Loop through all search terms,
-        # and search for a video of the given search term
-        for search_term in search_terms:
-            found_urls = search_for_stock_videos(
-                search_term, PEXELS_API_KEY, it, min_dur
-            )
-            # Check for duplicates
-            for url in found_urls:
-                if url not in video_urls:
-                    video_urls.append(url)
-                    break
+    project.generate_script()
+    project.get_search_terms()
 
-        # Check if video_urls is empty
-        if not video_urls:
-            print(colored("[-] No videos found to download.", "red"))
-            return jsonify(
-                {
-                    "status": "error",
-                    "message": "No videos found to download.",
-                    "data": [],
-                }
-            )
+    video_paths = project.download_videos()
 
-        # Define video_paths
-        video_paths = []
+    # Check if video_paths is empty
+    if len(project.videos)==0:
+        print(colored("[-] No videos found to download.", "red"))
+        return None, MyHTTPException(400, "No videos found to download on pexels api.")
 
-        # Let user know
-        print(colored(f"[+] Downloading {len(video_urls)} videos...", "blue"))
 
-        # Save the videos
-        for video_url in video_urls:
-            try:
-                saved_video_path = save_video(
-                    video_url, project_dir / "video" / f"{uuid4()}.mp4"
-                )
-            except Exception as e:
-                print(colored(f"[-] Could not download video: {video_url}", "red"))
+    project.generate_tts()
+    project.get_subtitles()
 
-        # Let user know
-        print(colored("[+] Videos downloaded!", "green"))
+    project.make_final_video()
 
-    # Split script into sentences
-    sentences = script.split(". ")
-
-    # Remove empty strings
-    sentences = list(filter(lambda x: x != "", sentences))
-    audio_paths = []
-
-    tts_path = project_dir / "video" / "tts.mp3"
-    audio_paths = [
-        AudioFileClip(str(p))
-        for p in (project_dir / "video" / "audio_parts").glob("*.mp3")
-    ]
-    video_paths = [p for p in (project_dir / "video").glob("*.mp4")]
-
-    if len(audio_paths) == 0:
-        # Generate TTS for every sentence
-        for i, sentence in enumerate(sentences):
-            current_tts_path = project_dir / "video" / "audio_parts"
-            audio_part = tts(
-                sentence, project_config.voice, audio_parts=current_tts_path, i=i
-            )
-            audio_clip = AudioFileClip(str(audio_part))
-            audio_paths.append(audio_clip)
-
-    # Combine all TTS files using moviepy
-    if not tts_path.exists():
-        final_audio = concatenate_audioclips(audio_paths)
-        final_audio.write_audiofile(tts_path)
-
-    subtitles_path = project_dir / "video" / "subtitles.srt"
-    try:
-        if not subtitles_path.exists():
-            generate_subtitles(
-                audio_path=tts_path,
-                sentences=sentences,
-                audio_clips=audio_paths,
-                voice=voice_prefix,
-                target=subtitles_path,
-            )
-    except Exception as e:
-        print(colored(f"[-] Error generating subtitles: {e}", "red"))
-        subtitles_path = None
-
-    combined_video_path = project_dir / "output" / "combined.mp4"
-    if not combined_video_path.exists():
-        # Concatenate videos
-        temp_audio = AudioFileClip(str(tts_path))
-        combined_video_path = combine_videos(
-            video_paths,
-            temp_audio.duration,
-            5,
-            project_config.threads,
-            project_dir / "output" / "combined.mp4",
-        )
-
-    # Put everything together
-    try:
-        final_video_path = generate_video(
-            str(combined_video_path),
-            str(tts_path),
-            str(subtitles_path),
-            project_config.threads,
-            project_config.subtitlesPosition,
-            project_config.color,
-            target=project_dir / "output" / "final.mp4",
-        )
-    except Exception as e:
-        print(colored(f"[-] Error generating final video: {e}", "red"))
-        return jsonify(
-            {
-                "status": "error",
-                "message": "Error generating final video.",
-                "data": [],
-            }
-        )
+    return {
+        "status": "success",
+        "message": "Video generated!",
+        "data": str(project.root / "output" / "final.mp4"),
+    },None
 
     # Define metadata for the video, we will display this to the user, and use it for the YouTube upload
     title, description, keywords = generate_metadata(
-        project_config.videoSubject, script, project_config.aiModel
+        project_config.videoSubject, script, project_config.aiModel, project_dir / "keywords.json"
     )
 
     print(colored("[-] Metadata for YouTube upload:", "blue"))
@@ -332,14 +176,7 @@ def generate():
     # Let user know
     print(colored(f"[+] Video generated: {final_video_path}!", "green"))
 
-    # Stop FFMPEG processes
-    if os.name == "nt":
-        # Windows
-        os.system("taskkill /f /im ffmpeg.exe")
-    else:
-        # Other OS
-        os.system("pkill -f ffmpeg")
-
+    
     # Return JSON
     return jsonify(
         {

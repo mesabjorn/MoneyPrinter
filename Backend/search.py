@@ -1,66 +1,100 @@
+from pathlib import Path
 import requests
-
+from dataclasses import dataclass
 from typing import List
 from termcolor import colored
+from decouple import config
 
-def search_for_stock_videos(query: str, api_key: str, it: int, min_dur: int) -> List[str]:
+PEXELS_API_KEY = config("PEXELS_API_KEY")
+
+@dataclass
+class VideoResult:
+    id: str
+    url: str
+    duration: int
+    width: int
+    height: int
+
+    def __str__(self):
+        return f"VideoResult(url={self.url}, duration={self.duration}, width={self.width}, height={self.height})"
+    
+    def __repr__(self):
+        return self.__str__()
+    
+    
+    def save(self, target_path: Path) -> Path|None:
+        """
+            Saves a video to the local directory.
+        """
+        r = requests.get(self.url, timeout=10)
+        if r.status_code != 200:
+            print(colored(f"Saving video failed for url: '{self.url}' to '{target_path}'", "red"))
+            return None
+        
+        with target_path.open("wb") as f:
+            f.write(r.content)
+        return target_path
+  
+
+def get_stock_video(query: str, n: int, min_dur: int, saved_urls: List[str]) -> VideoResult|None:
     """
     Searches for stock videos based on a query.
 
     Args:
         query (str): The query to search for.
-        api_key (str): The API key to use.
+        n (int): The number of videos to search for.
+        min_dur (int): The minimum duration of the videos to search for.
 
     Returns:
-        List[str]: A list of stock videos.
+        VideoResult: A stock video or None if no video is found.
     """
     
     # Build headers
     headers = {
-        "Authorization": api_key
+        "Authorization": PEXELS_API_KEY
     }
 
     # Build URL
-    qurl = f"https://api.pexels.com/videos/search?query={query}&per_page={it}"
+    qurl = f"https://api.pexels.com/videos/search?query={query}&per_page={n}"
 
     # Send the request
-    r = requests.get(qurl, headers=headers)
+    r = requests.get(qurl, headers=headers,timeout=10)
 
     # Parse the response
     response = r.json()
 
-    # Parse each video
-    raw_urls = []
-    video_url = []
+    # Parse each video    
+    result: VideoResult = None
     video_res = 0
-    try:
-        # loop through each video in the result
-        for i in range(it):
-            #check if video has desired minimum duration
-            if response["videos"][i]["duration"] < min_dur:
+    videos = response["videos"]
+    if len(videos) == 0:
+        print(colored(f"[-] No videos found for query: '{query}'", "red"))
+        return None
+    
+    # loop through each video in the result
+    for video in filter(lambda x: x["duration"] >= min_dur, videos): # filter out videos that are less than the minimum duration
+        video_files = video["video_files"]            
+        
+        best_url = ""
+
+        # loop through each url to determine the best quality
+        for video_file in video_files:
+            url = video_file["link"]
+            if url in saved_urls:
                 continue
-            raw_urls = response["videos"][i]["video_files"]
-            temp_video_url = ""
-            
-            # loop through each url to determine the best quality
-            for video in raw_urls:
-                # Check if video has a valid download link
-                if ".com/video-files" in video["link"]:
-                    # Only save the URL with the largest resolution
-                    if (video["width"]*video["height"]) > video_res:
-                        temp_video_url = video["link"]
-                        video_res = video["width"]*video["height"]
-                        
-            # add the url to the return list if it's not empty
-            if temp_video_url != "":
-                video_url.append(temp_video_url)
+            width = video_file["width"]
+            height = video_file["height"]
+            resolution = width*height
+            if ".com/video-files" in url:
+                # Only save the URL with the largest resolution
+                if resolution > video_res:
+                    best_url = url
+                    video_res = width*height
+        if len(best_url) > 0:
+            print(colored(f"\t=> \"{query}\" found {len(video_files)} videos.", "cyan"))
+            return VideoResult(id=video["id"], url=best_url, duration=video["duration"], width=width, height=height)
+    print(colored(f"[-] No videos found for query: '{query}'", "red"))
+    return None
+    
                 
-    except Exception as e:
-        print(colored("[-] No Videos found.", "red"))
-        print(colored(e, "red"))
 
-    # Let user know
-    print(colored(f"\t=> \"{query}\" found {len(video_url)} Videos", "cyan"))
-
-    # Return the video url
-    return video_url
